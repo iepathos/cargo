@@ -15,9 +15,14 @@
 //!
 //! If rustc changes this message format, this module will need to be updated accordingly.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use rustfix::diagnostics::Diagnostic;
+
+use crate::CargoResult;
+use crate::util::toml_mut::manifest::LocalManifest;
 
 /// Represents a dependency that needs to be marked as public.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -41,29 +46,139 @@ pub struct PublicDepFixResult {
 ///
 /// Parses diagnostics looking for the `exported_private_dependencies` lint and extracts
 /// the dependency names that need to be marked as public.
-///
-/// NOTE: Currently returns empty - implementation pending.
 pub fn collect_public_dep_fixes(
-    _diagnostics: &[Diagnostic],
-    _source_file: &Path,
+    diagnostics: &[Diagnostic],
+    source_file: &Path,
 ) -> Vec<PublicDepFix> {
-    // TODO: Implementation will parse diagnostics and collect fixes
-    Vec::new()
+    let manifest_path = match find_manifest_from_source(source_file) {
+        Some(path) => path,
+        None => return Vec::new(),
+    };
+
+    let mut fixes = HashSet::new();
+
+    for diagnostic in diagnostics {
+        if !is_exported_private_deps_lint(diagnostic) {
+            continue;
+        }
+
+        if let Some(dep_name) = parse_dep_name_from_message(&diagnostic.message) {
+            fixes.insert(PublicDepFix {
+                package_name: dep_name,
+                manifest_path: manifest_path.clone(),
+            });
+        }
+    }
+
+    fixes.into_iter().collect()
 }
 
 /// Applies public dependency fixes to manifest files.
 ///
 /// Modifies Cargo.toml files to add `public = true` to the specified dependencies.
 /// Returns a result containing the number of fixes applied and any errors encountered.
+pub fn apply_public_dep_fixes(fixes: &[PublicDepFix]) -> PublicDepFixResult {
+    let mut result = PublicDepFixResult::default();
+
+    // Group fixes by manifest path to avoid multiple reads/writes
+    let mut by_manifest: HashMap<&PathBuf, Vec<&str>> = HashMap::new();
+    for fix in fixes {
+        by_manifest
+            .entry(&fix.manifest_path)
+            .or_default()
+            .push(&fix.package_name);
+    }
+
+    for (manifest_path, dep_names) in by_manifest {
+        match apply_fixes_to_manifest(manifest_path, &dep_names) {
+            Ok(count) => result.applied += count,
+            Err(e) => result.errors.push((manifest_path.clone(), e)),
+        }
+    }
+
+    result
+}
+
+/// Finds the Cargo.toml manifest file from a source file path.
 ///
-/// NOTE: Currently returns empty result - implementation pending.
-pub fn apply_public_dep_fixes(_fixes: &[PublicDepFix]) -> PublicDepFixResult {
-    // TODO: Implementation will modify Cargo.toml files
-    PublicDepFixResult::default()
+/// Walks up the directory tree looking for Cargo.toml.
+/// Returns an absolute path since LocalManifest requires it.
+fn find_manifest_from_source(source_file: &Path) -> Option<PathBuf> {
+    // Canonicalize the source file to get an absolute path
+    let source_file = source_file.canonicalize().ok()?;
+    let mut dir = source_file.parent()?;
+    loop {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.exists() {
+            return Some(manifest);
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// Applies fixes to a single manifest file.
+fn apply_fixes_to_manifest(manifest_path: &Path, dep_names: &[&str]) -> CargoResult<usize> {
+    let mut manifest = LocalManifest::try_new(manifest_path)
+        .with_context(|| format!("failed to read `{}`", manifest_path.display()))?;
+
+    let mut count = 0;
+    for dep_name in dep_names {
+        if mark_dependency_public(&mut manifest, dep_name) {
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        manifest
+            .write()
+            .with_context(|| format!("failed to write `{}`", manifest_path.display()))?;
+    }
+
+    Ok(count)
+}
+
+/// Marks a dependency as public in the manifest.
+///
+/// Searches `[dependencies]` and `[target.*.dependencies]` tables for the dependency.
+fn mark_dependency_public(manifest: &mut LocalManifest, dep_name: &str) -> bool {
+    let document = manifest.data.as_table_mut();
+
+    let modified_top = mark_dep_in_table(document, dep_name);
+    let modified_targets = mark_dep_in_target_tables(document, dep_name);
+
+    modified_top || modified_targets
+}
+
+/// Marks a dependency as public in the `[dependencies]` table.
+///
+/// Only checks `[dependencies]`, not `[dev-dependencies]` or `[build-dependencies]`,
+/// since the `exported_private_dependencies` lint only fires for regular dependencies
+/// that are exposed in the public API.
+fn mark_dep_in_table(table: &mut toml_edit::Table, dep_name: &str) -> bool {
+    if let Some(deps) = table.get_mut("dependencies").and_then(|v| v.as_table_mut()) {
+        return add_public_to_dependency(deps, dep_name);
+    }
+    false
+}
+
+/// Marks a dependency as public in target-specific `[target.*.dependencies]` tables.
+fn mark_dep_in_target_tables(document: &mut toml_edit::Table, dep_name: &str) -> bool {
+    let Some(target_table) = document.get_mut("target").and_then(|v| v.as_table_mut()) else {
+        return false;
+    };
+
+    let mut modified = false;
+    for (_target, target_value) in target_table.iter_mut() {
+        if let Some(target_deps) = target_value.as_table_mut() {
+            if mark_dep_in_table(target_deps, dep_name) {
+                modified = true;
+            }
+        }
+    }
+    modified
 }
 
 /// Checks if a diagnostic is the `exported_private_dependencies` lint.
-#[allow(dead_code)] // Used by implementation in next commit
 fn is_exported_private_deps_lint(diagnostic: &Diagnostic) -> bool {
     diagnostic
         .code
@@ -74,7 +189,6 @@ fn is_exported_private_deps_lint(diagnostic: &Diagnostic) -> bool {
 /// Parses the dependency name from an `exported_private_dependencies` lint message.
 ///
 /// Expected format: `<type> `<type_name>` from private dependency '<crate_name>' in public interface`
-#[allow(dead_code)] // Used by implementation in next commit
 fn parse_dep_name_from_message(message: &str) -> Option<String> {
     // Look for the pattern: from private dependency '<name>'
     let marker = "from private dependency '";
@@ -87,7 +201,6 @@ fn parse_dep_name_from_message(message: &str) -> Option<String> {
 /// Adds `public = true` to a dependency in a dependencies table.
 ///
 /// Handles both simple version strings and inline tables.
-#[allow(dead_code)] // Used by implementation in next commit
 fn add_public_to_dependency(deps_table: &mut toml_edit::Table, dep_name: &str) -> bool {
     // Try direct name match first
     if let Some(dep_value) = deps_table.get_mut(dep_name) {
@@ -112,7 +225,6 @@ fn add_public_to_dependency(deps_table: &mut toml_edit::Table, dep_name: &str) -
 ///
 /// Converts simple version strings to inline tables as needed.
 /// Skips if `public` is already explicitly set (to any value).
-#[allow(dead_code)] // Used by implementation in next commit
 fn set_public_true(dep_value: &mut toml_edit::Item) -> bool {
     // Skip if public is already explicitly set (to any value)
     if let Some(table) = dep_value.as_table_like() {
