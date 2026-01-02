@@ -2,7 +2,7 @@
 
 use crate::prelude::*;
 use cargo_test_support::registry::{Dependency, Package};
-use cargo_test_support::{git, str};
+use cargo_test_support::{Project, git, str};
 use cargo_test_support::{project, registry};
 
 #[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
@@ -1221,4 +1221,556 @@ fn relative_display_path() {
 ...
 "#]])
         .run();
+}
+
+// =============================================================================
+// cargo fix tests for exported_private_dependencies lint
+//
+// These tests document the current behavior where `cargo fix` does NOT yet
+// automatically add `public = true` to dependencies. The implementation is
+// pending - these tests will be updated when the feature is implemented.
+// =============================================================================
+
+/// Helper to run cargo fix with public-dependency feature.
+fn run_cargo_fix_public_dep(p: &Project) {
+    p.cargo("fix --allow-no-vcs -Zpublic-dependency")
+        .masquerade_as_nightly_cargo(&["public-dependency"])
+        .run();
+}
+
+/// Assert manifest does NOT contain `public = true` (current behavior).
+fn assert_no_public_true(p: &Project) {
+    let manifest = p.read_file("Cargo.toml");
+    assert!(
+        !manifest.contains("public = true"),
+        "Cargo.toml should NOT have public = true (not yet implemented): {manifest}"
+    );
+}
+
+/// Assert manifest contains exactly `n` occurrences of `public = true`.
+fn assert_public_count(p: &Project, expected: usize) {
+    let manifest = p.read_file("Cargo.toml");
+    let count = manifest.matches("public = true").count();
+    assert_eq!(
+        count, expected,
+        "Expected {expected} public = true entries: {manifest}"
+    );
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_simple_version() {
+    // Tests that cargo fix runs on a simple version dependency.
+    // Currently does NOT add public = true (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep = "0.1.0"
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+    assert_no_public_true(&p);
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_inline_table() {
+    // Tests that cargo fix runs on an inline table dependency.
+    // Currently does NOT add public = true (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep = { version = "0.1.0" }
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+    assert_no_public_true(&p);
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_renamed() {
+    // Tests that cargo fix runs on a renamed dependency.
+    // Currently does NOT add public = true (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                renamed = { version = "0.1.0", package = "priv_dep" }
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            "extern crate renamed; pub fn use_priv(_: renamed::FromPriv) {}",
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+    assert_no_public_true(&p);
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_multiple() {
+    // Tests that cargo fix runs with multiple private dependencies.
+    // Currently does NOT add public = true (implementation pending).
+    Package::new("priv_dep1", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv1;")
+        .publish();
+    Package::new("priv_dep2", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv2;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep1 = "0.1.0"
+                priv_dep2 = "0.1.0"
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                extern crate priv_dep1;
+                extern crate priv_dep2;
+                pub fn use_priv1(_: priv_dep1::FromPriv1) {}
+                pub fn use_priv2(_: priv_dep2::FromPriv2) {}
+            "#,
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+    // Currently no public = true entries are added (implementation pending)
+    assert_public_count(&p, 0);
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_mixed_public_private() {
+    // Tests cargo fix with one already-public and one private dependency.
+    // Currently does NOT add public = true to priv_dep (implementation pending).
+    Package::new("pub_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPub;")
+        .publish();
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                pub_dep = { version = "0.1.0", public = true }
+                priv_dep = "0.1.0"
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                extern crate pub_dep;
+                extern crate priv_dep;
+                pub fn use_pub(_: pub_dep::FromPub) {}
+                pub fn use_priv(_: priv_dep::FromPriv) {}
+            "#,
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+    // Only pub_dep has public = true (was already there), priv_dep not yet fixed
+    assert_public_count(&p, 1);
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_path_dependency() {
+    // Tests that cargo fix runs on a path dependency.
+    // Currently does NOT add public = true (implementation pending).
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep = { path = "priv_dep" }
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .file(
+            "priv_dep/Cargo.toml",
+            r#"
+                [package]
+                name = "priv_dep"
+                version = "0.1.0"
+                edition = "2015"
+            "#,
+        )
+        .file("priv_dep/src/lib.rs", "pub struct FromPriv;")
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+    assert_no_public_true(&p);
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_explicit_public_false() {
+    // Explicit public = false should remain unchanged.
+    // This behavior is correct and will remain the same after implementation.
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep = { version = "0.1.0", public = false }
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+
+    let manifest = p.read_file("Cargo.toml");
+    assert!(
+        manifest.contains("public = false"),
+        "public = false should remain: {manifest}"
+    );
+    assert!(
+        !manifest.contains("public = true"),
+        "should NOT add public = true: {manifest}"
+    );
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_idempotent() {
+    // Tests that running cargo fix twice produces consistent results.
+    // Currently no changes are made (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep = "0.1.0"
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .build();
+
+    // First run (currently no changes)
+    run_cargo_fix_public_dep(&p);
+    let manifest_after_first = p.read_file("Cargo.toml");
+
+    // Second run should not change anything
+    run_cargo_fix_public_dep(&p);
+    let manifest_after_second = p.read_file("Cargo.toml");
+
+    assert_eq!(
+        manifest_after_first, manifest_after_second,
+        "should be idempotent"
+    );
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_preserves_formatting() {
+    // Tests that cargo fix preserves existing Cargo.toml formatting.
+    // Currently no changes are made (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+    Package::new("other_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct Other;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                other_dep = "0.1.0"
+                priv_dep = { version = "0.1.0", default-features = false }
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+
+    let manifest = p.read_file("Cargo.toml");
+    // Existing formatting should be preserved
+    assert!(
+        manifest.contains(r#"other_dep = "0.1.0""#),
+        "other_dep unchanged: {manifest}"
+    );
+    assert!(
+        manifest.contains("default-features = false"),
+        "preserves attrs: {manifest}"
+    );
+    // Currently no public = true is added (implementation pending)
+    assert!(
+        !manifest.contains("public = true"),
+        "public = true not yet added: {manifest}"
+    );
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_target_specific_dependency() {
+    // Tests that cargo fix runs on target-specific dependencies.
+    // Currently does NOT add public = true (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [target.'cfg(unix)'.dependencies]
+                priv_dep = "0.1.0"
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                #[cfg(unix)]
+                extern crate priv_dep;
+                #[cfg(unix)]
+                pub fn use_priv(_: priv_dep::FromPriv) {}
+            "#,
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+    assert_no_public_true(&p);
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_workspace_member() {
+    // Tests that cargo fix runs on workspace members.
+    // Currently does NOT add public = true (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [workspace]
+                members = ["member"]
+            "#,
+        )
+        .file(
+            "member/Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "member"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep = "0.1.0"
+            "#,
+        )
+        .file(
+            "member/src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .build();
+
+    p.cargo("fix --allow-no-vcs -Zpublic-dependency")
+        .masquerade_as_nightly_cargo(&["public-dependency"])
+        .run();
+
+    let member_manifest = p.read_file("member/Cargo.toml");
+    // Currently no public = true is added (implementation pending)
+    assert!(
+        !member_manifest.contains("public = true"),
+        "member Cargo.toml should NOT have public = true (not yet implemented): {member_manifest}"
+    );
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_ignores_dev_dependencies() {
+    // The exported_private_dependencies lint only fires for regular dependencies,
+    // not dev-dependencies. This test verifies we don't touch dev-dependencies.
+    // This behavior is correct and will remain the same after implementation.
+    Package::new("dev_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromDev;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                [dev-dependencies]
+                dev_dep = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "pub struct Foo;")
+        .file(
+            "tests/integration.rs",
+            "extern crate dev_dep; pub fn use_dev(_: dev_dep::FromDev) {}",
+        )
+        .build();
+
+    run_cargo_fix_public_dep(&p);
+
+    let manifest = p.read_file("Cargo.toml");
+    assert!(
+        !manifest.contains("public = true"),
+        "dev-dependencies should NOT get public = true: {manifest}"
+    );
+    assert!(
+        manifest.contains(r#"dev_dep = "0.1.0""#),
+        "dev_dep should remain unchanged: {manifest}"
+    );
+}
+
+#[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
+fn cargo_fix_workspace_inherited_dependency() {
+    // Tests that cargo fix handles dependencies using workspace inheritance.
+    // Currently does NOT add public = true (implementation pending).
+    Package::new("priv_dep", "0.1.0")
+        .file("src/lib.rs", "pub struct FromPriv;")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [workspace]
+                members = ["member"]
+
+                [workspace.dependencies]
+                priv_dep = "0.1.0"
+            "#,
+        )
+        .file(
+            "member/Cargo.toml",
+            r#"
+                cargo-features = ["public-dependency"]
+                [package]
+                name = "member"
+                version = "0.0.1"
+                edition = "2015"
+                [dependencies]
+                priv_dep = { workspace = true }
+            "#,
+        )
+        .file(
+            "member/src/lib.rs",
+            "extern crate priv_dep; pub fn use_priv(_: priv_dep::FromPriv) {}",
+        )
+        .build();
+
+    p.cargo("fix --allow-no-vcs -Zpublic-dependency")
+        .masquerade_as_nightly_cargo(&["public-dependency"])
+        .run();
+
+    let member_manifest = p.read_file("member/Cargo.toml");
+    // Currently no public = true is added (implementation pending)
+    assert!(
+        !member_manifest.contains("public = true"),
+        "member should NOT have public = true (not yet implemented): {member_manifest}"
+    );
 }

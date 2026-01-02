@@ -68,6 +68,7 @@ use crate::util::{LockServer, LockServerClient, existing_vcs_repo};
 use crate::{drop_eprint, drop_eprintln};
 
 mod fix_edition;
+mod public_deps;
 
 /// **Internal only.**
 /// Indicates Cargo is in fix-proxy-mode if presents.
@@ -984,14 +985,38 @@ fn rustfix_and_fix(
     // indicating fixes that we can apply.
     let stderr = str::from_utf8(&output.stderr).context("failed to parse rustc stderr as UTF-8")?;
 
-    let suggestions = stderr
+    // Parse all diagnostics first - we need them for both suggestions and public deps
+    let diagnostics: Vec<Diagnostic> = stderr
         .lines()
         .filter(|x| !x.is_empty())
         .inspect(|y| trace!("line: {}", y))
-        // Parse each line of stderr, ignoring errors, as they may not all be JSON.
         .filter_map(|line| serde_json::from_str::<Diagnostic>(line).ok())
-        // From each diagnostic, try to extract suggestions from rustc.
-        .filter_map(|diag| rustfix::collect_suggestions(&diag, &only, fix_mode));
+        .collect();
+
+    // Handle exported_private_dependencies lint by modifying Cargo.toml
+    let public_dep_fixes = public_deps::collect_public_dep_fixes(&diagnostics, filename);
+    if !public_dep_fixes.is_empty() {
+        let result = public_deps::apply_public_dep_fixes(&public_dep_fixes);
+        if result.applied > 0 {
+            debug!(
+                "applied {} public dependency fixes for `{}`",
+                result.applied,
+                filename.display()
+            );
+        }
+        for (path, err) in result.errors {
+            warn!(
+                "failed to apply public dependency fix to `{}`: {}",
+                path.display(),
+                err
+            );
+        }
+    }
+
+    // From each diagnostic, try to extract suggestions from rustc.
+    let suggestions = diagnostics
+        .iter()
+        .filter_map(|diag| rustfix::collect_suggestions(diag, &only, fix_mode));
 
     // Collect suggestions by file so we can apply them one at a time later.
     let mut file_map = HashMap::new();
