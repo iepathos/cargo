@@ -1233,12 +1233,11 @@ fn run_cargo_fix_public_dep(p: &Project) {
         .run();
 }
 
-fn assert_no_public_true(p: &Project) {
+fn assert_has_public_true(p: &Project) {
     let manifest = p.read_file("Cargo.toml");
-    // No-op implementation: cargo fix should not modify Cargo.toml yet
     assert!(
-        !manifest.contains("public = true"),
-        "Cargo.toml should NOT have public = true (not implemented yet): {manifest}"
+        manifest.contains("public = true"),
+        "Cargo.toml should have public = true after fix: {manifest}"
     );
 }
 
@@ -1268,7 +1267,7 @@ fn cargo_fix_simple_version_string() {
         .build();
 
     run_cargo_fix_public_dep(&p);
-    assert_no_public_true(&p);
+    assert_has_public_true(&p);
 }
 
 #[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
@@ -1297,7 +1296,7 @@ fn cargo_fix_inline_table() {
         .build();
 
     run_cargo_fix_public_dep(&p);
-    assert_no_public_true(&p);
+    assert_has_public_true(&p);
 }
 
 #[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
@@ -1328,7 +1327,7 @@ fn cargo_fix_full_table() {
 
     run_cargo_fix_public_dep(&p);
 
-    assert_no_public_true(&p);
+    assert_has_public_true(&p);
 }
 
 #[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
@@ -1358,7 +1357,7 @@ fn cargo_fix_renamed_dependency() {
 
     run_cargo_fix_public_dep(&p);
 
-    assert_no_public_true(&p);
+    assert_has_public_true(&p);
 }
 
 #[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
@@ -1397,7 +1396,7 @@ fn cargo_fix_multiple_deps() {
 
     run_cargo_fix_public_dep(&p);
 
-    assert_no_public_true(&p);
+    assert_has_public_true(&p);
 }
 
 #[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
@@ -1507,7 +1506,7 @@ fn cargo_fix_target_specific_dependency() {
 
     run_cargo_fix_public_dep(&p);
 
-    assert_no_public_true(&p);
+    assert_has_public_true(&p);
 }
 
 #[cargo_test(nightly, reason = "exported_private_dependencies lint is unstable")]
@@ -1548,10 +1547,9 @@ fn cargo_fix_workspace_member() {
         .run();
 
     let manifest = p.read_file("member/Cargo.toml");
-    // No-op: cargo fix should not modify Cargo.toml yet
     assert!(
-        !manifest.contains("public = true"),
-        "member/Cargo.toml should NOT have public = true (not implemented yet): {manifest}"
+        manifest.contains("public = true"),
+        "member/Cargo.toml should have public = true after fix: {manifest}"
     );
 }
 
@@ -1580,16 +1578,15 @@ fn cargo_fix_idempotent() {
         )
         .build();
 
-    // First fix - no-op implementation
+    // First fix - should add public = true
     run_cargo_fix_public_dep(&p);
     let manifest_after_first = p.read_file("Cargo.toml");
-    // No-op: cargo fix should not modify Cargo.toml yet
     assert!(
-        !manifest_after_first.contains("public = true"),
-        "Cargo.toml should NOT have public = true (not implemented yet): {manifest_after_first}"
+        manifest_after_first.contains("public = true"),
+        "Cargo.toml should have public = true after first fix: {manifest_after_first}"
     );
 
-    // Second fix - should produce identical result (no change)
+    // Second fix - should produce identical result (already fixed)
     run_cargo_fix_public_dep(&p);
     let manifest_after_second = p.read_file("Cargo.toml");
 
