@@ -68,6 +68,7 @@ use crate::util::{LockServer, LockServerClient, existing_vcs_repo};
 use crate::{drop_eprint, drop_eprintln};
 
 mod fix_edition;
+mod public_deps;
 
 /// **Internal only.**
 /// Indicates Cargo is in fix-proxy-mode if presents.
@@ -986,18 +987,29 @@ fn rustfix_and_fix(
         .map(|_| rustfix::Filter::Everything)
         .unwrap_or(rustfix::Filter::MachineApplicableOnly);
 
-    // Sift through the output of the compiler to look for JSON messages.
+    // Sift through the output of the compiler to look for JSON messages
     // indicating fixes that we can apply.
     let stderr = str::from_utf8(&output.stderr).context("failed to parse rustc stderr as UTF-8")?;
 
-    let suggestions = stderr
+    let diagnostics: Vec<Diagnostic> = stderr
         .lines()
         .filter(|x| !x.is_empty())
         .inspect(|y| trace!("line: {}", y))
-        // Parse each line of stderr, ignoring errors, as they may not all be JSON.
         .filter_map(|line| serde_json::from_str::<Diagnostic>(line).ok())
-        // From each diagnostic, try to extract suggestions from rustc.
-        .filter_map(|diag| rustfix::collect_suggestions(&diag, &only, fix_mode));
+        .collect();
+
+    // Extract suggestions from rustc diagnostics.
+    let rustc_suggestions = diagnostics
+        .iter()
+        .filter_map(|diag| rustfix::collect_suggestions(diag, &only, fix_mode));
+
+    // Collect machine-applicable suggestions for exported_private_dependencies lint.
+    // These are Cargo.toml modifications that flow through the same rustfix infrastructure.
+    let public_dep_suggestions =
+        public_deps::collect_public_dep_suggestions(&diagnostics, filename);
+
+    // Chain all suggestions together.
+    let suggestions = rustc_suggestions.chain(public_dep_suggestions);
 
     // Collect suggestions by file so we can apply them one at a time later.
     let mut file_map = HashMap::new();
